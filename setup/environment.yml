@@ -1,0 +1,35 @@
+name: bootcamp
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    # LLM
+    - anthropic>=0.40.0
+    # Multi-agent orchestration
+    - langgraph>=0.2.0
+    - langchain-core>=0.3.0
+    # Memory / RAG
+    - chromadb>=0.5.0
+    - sentence-transformers>=3.0.0
+    # API / backend
+    - fastapi>=0.115.0
+    - uvicorn[standard]>=0.32.0
+    - python-multipart>=0.0.9
+    - sse-starlette>=2.1.0
+    # Tools / plugins
+    - duckduckgo-search>=6.0.0
+    - PyPDF2>=3.0.0
+    - httpx>=0.27.0
+    - requests>=2.31.0
+    # MCP
+    - mcp>=1.0.0
+    # Monitoring
+    - agentops>=0.3.0
+    # Utilities
+    - python-dotenv>=1.0.0
+    - pydantic>=2.0.0
+    - rich>=13.0.0
+    - typer>=0.12.0
