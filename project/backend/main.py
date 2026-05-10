@@ -11,8 +11,16 @@ Routes:
   GET  /a2a/tasks/{id}             A2A task result
 
 Run:
-    conda run -n bootcamp uvicorn project.backend.main:app --reload --port 8000
+    From this directory:  uvicorn main:app --reload --port 9000
+    From parent `project/`: uvicorn backend.main:app --reload --port 9000
 """
+
+import sys
+from pathlib import Path
+
+_project_dir = Path(__file__).resolve().parent.parent
+if str(_project_dir) not in sys.path:
+    sys.path.insert(0, str(_project_dir))
 
 import os
 import json
@@ -24,11 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from .config import SKILLS, ANTHROPIC_API_KEY
-from .skills.router import route_skill
-from .graph import run_pipeline
-from .hooks import before_skill, after_skill
-from .a2a.server import a2a_router
+from backend.config import SKILLS, ANTHROPIC_API_KEY
+from backend.skills.router import route_skill
+from backend.graph import run_pipeline
+from backend.hooks import before_skill, after_skill
+from backend.a2a.server import a2a_router
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("main")
