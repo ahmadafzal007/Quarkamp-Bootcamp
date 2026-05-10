@@ -41,8 +41,12 @@ SKILLS = {
     "plan"     : "Break a task into a structured plan",
     "critique" : "Review and improve a piece of writing",
     "summarize": "Summarise a topic or document",
+    "memory"   : "Search your past answers",
     "help"     : "List available skills",
 }
+
+# Skills that trigger the full multi-agent pipeline
+PIPELINE_SKILLS = {"research", "plan", "critique", "summarize"}
 
 # ── A2A config ────────────────────────────────────────────────────────────────
 A2A_HOST    = "0.0.0.0"

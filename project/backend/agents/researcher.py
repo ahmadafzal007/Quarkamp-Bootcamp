@@ -43,7 +43,7 @@ def researcher_node(state: dict) -> dict:
 
             if response.stop_reason == "end_turn":
                 text = next((b.text for b in response.content if hasattr(b, "text")), "")
-                findings[subtask] = text
+                findings[subtask] = text or "No findings for this subtask."
                 break
 
             tool_results = []
@@ -57,6 +57,13 @@ def researcher_node(state: dict) -> dict:
                     "tool_use_id": block.id,
                     "content"    : obs,
                 })
+
+            if not tool_results:
+                # Model did not call any tools — extract any text and stop
+                text = next((b.text for b in response.content if hasattr(b, "text")), "")
+                findings[subtask] = text or "No relevant findings."
+                break
+
             messages.append({"role": "user", "content": tool_results})
         else:
             # Fallback if loop exhausted

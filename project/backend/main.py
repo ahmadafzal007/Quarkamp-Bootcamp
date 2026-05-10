@@ -2,17 +2,19 @@
 FastAPI Application — University Assignment Platform
 =====================================================
 Routes:
-  GET  /health                     health check
-  GET  /skills                     list available skills
-  POST /run                        run pipeline (blocking, returns JSON)
-  GET  /stream                     run pipeline (streaming SSE)
-  GET  /a2a/.well-known/agent.json A2A agent card
-  POST /a2a/tasks                  A2A task submission
-  GET  /a2a/tasks/{id}             A2A task result
+  GET  /health                       health check
+  GET  /skills                       list available skills
+  GET  /chat                         general AI chat (fast, no pipeline) — SSE
+  GET  /stream                       full multi-agent pipeline — SSE
+  POST /upload                       extract text from PDF / DOCX / TXT
+  POST /run                          run pipeline (blocking, returns JSON)
+  GET  /a2a/.well-known/agent.json   A2A agent card
+  POST /a2a/tasks                    A2A task submission
+  GET  /a2a/tasks/{id}               A2A task result
 
 Run:
-    From this directory:  uvicorn main:app --reload --port 9000
-    From parent `project/`: uvicorn backend.main:app --reload --port 9000
+    From backend/: uvicorn main:app --reload --port 9000
+    From project/: uvicorn backend.main:app --reload --port 9000
 """
 
 import sys
@@ -23,18 +25,20 @@ if str(_project_dir) not in sys.path:
     sys.path.insert(0, str(_project_dir))
 
 import os
+import io
 import json
 import time
+import queue
 import asyncio
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from backend.config import SKILLS, ANTHROPIC_API_KEY
+from backend.config import SKILLS, ANTHROPIC_API_KEY, MODEL_FAST
 from backend.skills.router import route_skill
-from backend.graph import run_pipeline
+from backend.graph import run_pipeline, run_pipeline_streaming
 from backend.hooks import before_skill, after_skill
 from backend.a2a.server import a2a_router
 
@@ -44,7 +48,7 @@ logger = logging.getLogger("main")
 app = FastAPI(
     title      = "University Assignment Platform",
     description= "Multi-agent AI system for university assignments",
-    version    = "1.0.0",
+    version    = "2.0.0",
 )
 
 app.add_middleware(
@@ -56,6 +60,7 @@ app.add_middleware(
 
 app.include_router(a2a_router)
 
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -64,13 +69,13 @@ async def startup():
         logger.warning("ANTHROPIC_API_KEY not set — LLM calls will fail")
     else:
         logger.info("ANTHROPIC_API_KEY loaded OK")
-    logger.info("University Assignment Platform started")
+    logger.info("University Assignment Platform v2.0 started")
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
-    input: str        # raw user input e.g. "/research What is DNA?"
+    input: str
 
 
 class RunResponse(BaseModel):
@@ -86,7 +91,7 @@ class RunResponse(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "2.0.0"}
 
 
 @app.get("/skills")
@@ -94,7 +99,192 @@ async def list_skills():
     return {"skills": [{"name": k, "description": v} for k, v in SKILLS.items()]}
 
 
-# ── Blocking run ──────────────────────────────────────────────────────────────
+# ── General chat (fast path, no pipeline) ────────────────────────────────────
+
+@app.get("/chat")
+async def chat_endpoint(q: str = ""):
+    """
+    Fast general-chat endpoint.  Uses a single LLM call — no multi-agent pipeline.
+    Streams tokens via SSE.
+    """
+    import anthropic
+
+    async def generate():
+        yield json.dumps({"type": "session_start", "skill": "chat", "question": q})
+
+        if not q.strip():
+            yield json.dumps({"type": "error", "message": "Please enter a question."})
+            return
+
+        try:
+            client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            t_start = time.time()
+
+            response = client.messages.create(
+                model      = MODEL_FAST,
+                max_tokens = 1024,
+                system     = (
+                    "You are a helpful AI assistant for university students. "
+                    "Answer clearly and concisely. "
+                    "If the user is asking to research, write, plan, or critique an assignment in depth, "
+                    "suggest they use commands like /research, /plan, /summarize, or /critique."
+                ),
+                messages   = [{"role": "user", "content": q}],
+            )
+            answer = response.content[0].text
+
+            for i in range(0, len(answer), 8):
+                yield json.dumps({"type": "token", "content": answer[i:i + 8]})
+                await asyncio.sleep(0.005)
+
+            yield json.dumps({
+                "type"        : "done",
+                "quality_score": 0,
+                "duration_s"  : round(time.time() - t_start, 2),
+                "is_assignment": False,
+            })
+        except Exception as exc:
+            logger.error("chat error: %s", exc)
+            yield json.dumps({"type": "error", "message": str(exc)})
+
+    return EventSourceResponse(generate())
+
+
+# ── Multi-agent pipeline — streaming SSE ──────────────────────────────────────
+
+@app.get("/stream")
+async def stream_endpoint(input: str = "/help"):
+    """
+    Full multi-agent pipeline.  Emits real-time events while agents run:
+      agent_start, agent_log, token, done, error
+    """
+    routed = route_skill(input)
+
+    async def generate():
+        yield json.dumps({
+            "type"    : "session_start",
+            "skill"   : routed["skill"],
+            "question": routed["question"],
+        })
+
+        # Non-pipeline skills (memory lookup, help)
+        if not routed["is_pipeline"]:
+            response_text = routed.get("response") or ""
+            for i in range(0, len(response_text), 8):
+                yield json.dumps({"type": "token", "content": response_text[i:i + 8]})
+                await asyncio.sleep(0.005)
+            yield json.dumps({"type": "done", "quality_score": 0, "duration_s": 0, "is_assignment": False})
+            return
+
+        guard = before_skill(routed["question"], routed["skill"])
+        if not guard["ok"]:
+            yield json.dumps({"type": "error", "message": guard["reason"]})
+            return
+
+        event_q = queue.Queue()
+        t_start  = time.time()
+        loop     = asyncio.get_event_loop()
+
+        # Run pipeline in thread pool; it pushes events to event_q
+        future = loop.run_in_executor(
+            None,
+            run_pipeline_streaming,
+            routed["question"],
+            routed["skill"],
+            event_q,
+        )
+
+        # Forward events while pipeline runs
+        while not future.done() or not event_q.empty():
+            drained = 0
+            while drained < 20:
+                try:
+                    ev = event_q.get_nowait()
+                    yield json.dumps(ev)
+                    drained += 1
+                except queue.Empty:
+                    break
+            if not future.done():
+                await asyncio.sleep(0.1)
+
+        result   = await future
+        duration = time.time() - t_start
+        after_skill(result, routed["skill"], duration)
+
+        # Stream final answer token-by-token
+        answer = result.get("final_answer", "")
+        for i in range(0, len(answer), 8):
+            yield json.dumps({"type": "token", "content": answer[i:i + 8]})
+            await asyncio.sleep(0.005)
+
+        yield json.dumps({
+            "type"          : "done",
+            "quality_score" : result.get("quality_score", 0),
+            "duration_s"    : round(duration, 2),
+            "revision_count": result.get("revision_count", 0),
+            "is_assignment" : True,
+        })
+
+    return EventSourceResponse(generate())
+
+
+# ── Document upload ───────────────────────────────────────────────────────────
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Accept a PDF, DOCX, or plain-text file and return the extracted text.
+    The caller can prepend this text as context for a pipeline run.
+    """
+    raw      = await file.read()
+    filename = (file.filename or "").lower()
+    text     = ""
+
+    try:
+        if filename.endswith(".pdf"):
+            text = _extract_pdf(raw)
+        elif filename.endswith(".docx"):
+            text = _extract_docx(raw)
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+    except Exception as exc:
+        logger.error("Upload extraction error: %s", exc)
+        return {"error": str(exc), "text": "", "filename": file.filename}
+
+    return {
+        "filename": file.filename,
+        "text"    : text[:12000],
+        "length"  : len(text),
+    }
+
+
+def _extract_pdf(content: bytes) -> str:
+    try:
+        from pdfminer.high_level import extract_text_to_fp
+        from pdfminer.layout import LAParams
+        output = io.StringIO()
+        extract_text_to_fp(io.BytesIO(content), output, laparams=LAParams())
+        return output.getvalue()
+    except ImportError:
+        pass
+    try:
+        import PyPDF2
+        reader = PyPDF2.PdfReader(io.BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except ImportError:
+        return "[PDF extraction requires pdfminer.six or PyPDF2 — run: pip install pdfminer.six]"
+
+
+def _extract_docx(content: bytes) -> str:
+    try:
+        import docx
+        doc = docx.Document(io.BytesIO(content))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    except ImportError:
+        return "[DOCX extraction requires python-docx — run: pip install python-docx]"
+
+
+# ── Blocking run (for integrations) ──────────────────────────────────────────
 
 @app.post("/run", response_model=RunResponse)
 async def run_endpoint(request: RunRequest):
@@ -104,7 +294,7 @@ async def run_endpoint(request: RunRequest):
         return RunResponse(
             skill        = routed["skill"],
             question     = routed["question"],
-            final_answer = routed["response"],
+            final_answer = routed.get("response") or "",
             quality_score= 0,
             agent_log    = [],
             duration_s   = 0.0,
@@ -120,7 +310,6 @@ async def run_endpoint(request: RunRequest):
         None, run_pipeline, routed["question"], routed["skill"]
     )
     duration = time.time() - t_start
-
     after_skill(result, routed["skill"], duration)
 
     return RunResponse(
@@ -131,76 +320,3 @@ async def run_endpoint(request: RunRequest):
         agent_log    = result.get("agent_log", []),
         duration_s   = round(duration, 2),
     )
-
-
-# ── Streaming SSE run ─────────────────────────────────────────────────────────
-
-@app.get("/stream")
-async def stream_endpoint(input: str = "/help"):
-    """
-    SSE endpoint. Connect with EventSource in React.
-    Events: session_start, agent_start, tool_call, token, done, error
-    """
-    routed = route_skill(input)
-
-    async def generate():
-        yield json.dumps({"type": "session_start", "skill": routed["skill"], "question": routed["question"]})
-
-        if not routed["is_pipeline"]:
-            yield json.dumps({"type": "token", "content": routed["response"]})
-            yield json.dumps({"type": "done", "quality_score": 0, "duration_s": 0})
-            return
-
-        guard = before_skill(routed["question"], routed["skill"])
-        if not guard["ok"]:
-            yield json.dumps({"type": "error", "message": guard["reason"]})
-            return
-
-        # Run pipeline in thread and stream events
-        t_start = time.time()
-        loop    = asyncio.get_event_loop()
-
-        # Stream agent log events via a queue
-        import queue
-        event_queue: queue.Queue = queue.Queue()
-
-        def patched_run():
-            result = run_pipeline(routed["question"], routed["skill"])
-            event_queue.put(("done", result))
-            return result
-
-        future = loop.run_in_executor(None, patched_run)
-
-        # Stream log entries from the pipeline (polled)
-        last_log_idx = 0
-        while not future.done():
-            await asyncio.sleep(0.3)
-            try:
-                msg_type, payload = event_queue.get_nowait()
-            except Exception:
-                pass
-
-        result   = await future
-        duration = time.time() - t_start
-        after_skill(result, routed["skill"], duration)
-
-        # Stream the agent log entries
-        for entry in result.get("agent_log", []):
-            yield json.dumps({"type": "agent_log", "entry": entry})
-            await asyncio.sleep(0.05)
-
-        # Stream the final answer token by token
-        answer = result.get("final_answer", "")
-        chunk_size = 4
-        for i in range(0, len(answer), chunk_size):
-            yield json.dumps({"type": "token", "content": answer[i:i+chunk_size]})
-            await asyncio.sleep(0.01)
-
-        yield json.dumps({
-            "type"         : "done",
-            "quality_score": result.get("quality_score", 0),
-            "duration_s"   : round(duration, 2),
-            "revision_count": result.get("revision_count", 0),
-        })
-
-    return EventSourceResponse(generate())

@@ -6,11 +6,13 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/stream': 'http://localhost:8000',
-      '/run'   : 'http://localhost:8000',
-      '/skills': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
-      '/a2a'   : 'http://localhost:8000',
+      '/stream': 'http://localhost:9000',
+      '/chat'  : 'http://localhost:9000',
+      '/upload': 'http://localhost:9000',
+      '/run'   : 'http://localhost:9000',
+      '/skills': 'http://localhost:9000',
+      '/health': 'http://localhost:9000',
+      '/a2a'   : 'http://localhost:9000',
     },
   },
 })

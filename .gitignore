@@ -1,2 +1,24 @@
+# Environment
 .env
 /project/.env
+
+# Node (anywhere in repo)
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+
+# Local / generated data (Chroma, etc.)
+project/data/
+
+# Build outputs
+dist/
+build/
+
+# Vite cache
+.vite/

@@ -1,41 +1,61 @@
 import { useState, useCallback } from 'react'
 import Terminal from './components/Terminal'
-import AgentStatus from './components/AgentStatus'
+import AgentFlowPanel from './components/AgentFlowPanel'
 import AssignmentHistory from './components/AssignmentHistory'
 
 export default function App() {
-  const [agentEvents, setAgentEvents]   = useState([])
-  const [history, setHistory]           = useState([])
-  const [activeAgents, setActiveAgents] = useState({})
-  const [stats, setStats]               = useState({ score: null, duration: null, cost: null })
+  const [history,      setHistory]      = useState([])
+  const [agentStates,  setAgentStates]  = useState({})   // { agentName: 'idle' | 'active' | 'done' }
+  const [agentEvents,  setAgentEvents]  = useState([])   // { agent, entry }
+  const [stats,        setStats]        = useState({ score: null, duration: null })
+  const [isRunning,    setIsRunning]    = useState(false)
 
   const handleEvent = useCallback((event) => {
     if (event.type === 'session_start') {
+      setAgentStates({})
       setAgentEvents([])
-      setActiveAgents({})
       setStats({ score: null, duration: null })
+      setIsRunning(true)
     }
 
+    // Real-time: agent node started
+    if (event.type === 'agent_start') {
+      const name = event.agent
+      setAgentStates(prev => {
+        const updated = { ...prev }
+        // Mark any previously active agent as done
+        Object.keys(updated).forEach(k => {
+          if (updated[k] === 'active') updated[k] = 'done'
+        })
+        updated[name] = 'active'
+        return updated
+      })
+    }
+
+    // Real-time: agent node finished
     if (event.type === 'agent_log') {
-      // Extract agent name from log entry like "[Orchestrator] ..."
-      const match = event.entry.match(/\[([^\]]+)\]/)
-      if (match) {
-        const name = match[1].split(' ')[0]
-        setActiveAgents(prev => ({ ...prev, [name]: 'running' }))
+      const name = event.agent
+      if (name) {
+        setAgentStates(prev => ({ ...prev, [name]: 'done' }))
       }
-      setAgentEvents(prev => [...prev, { ...event, ts: Date.now() }])
+      setAgentEvents(prev => [...prev, { agent: name || '?', entry: event.entry || '', ts: Date.now() }])
     }
 
     if (event.type === 'done') {
       setStats({
-        score   : event.quality_score,
-        duration: event.duration_s,
+        score   : event.quality_score ?? null,
+        duration: event.duration_s    ?? null,
       })
-      setActiveAgents(prev => {
+      setAgentStates(prev => {
         const updated = {}
         Object.keys(prev).forEach(k => { updated[k] = 'done' })
         return updated
       })
+      setIsRunning(false)
+    }
+
+    if (event.type === 'error') {
+      setIsRunning(false)
     }
   }, [])
 
@@ -45,19 +65,24 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      {/* Left panel — history */}
+      {/* Left — conversation history */}
       <aside className="panel panel-left">
         <AssignmentHistory history={history} />
       </aside>
 
-      {/* Center panel — terminal */}
+      {/* Center — chat */}
       <main className="panel panel-center">
         <Terminal onEvent={handleEvent} onComplete={handleComplete} />
       </main>
 
-      {/* Right panel — agent status */}
+      {/* Right — live agent pipeline visualization */}
       <aside className="panel panel-right">
-        <AgentStatus agents={activeAgents} events={agentEvents} stats={stats} />
+        <AgentFlowPanel
+          agents={agentStates}
+          events={agentEvents}
+          stats={stats}
+          isRunning={isRunning}
+        />
       </aside>
     </div>
   )
