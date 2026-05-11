@@ -20,6 +20,11 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AGENTOPS_API_KEY  = os.getenv("AGENTOPS_API_KEY",  "")
 BRAVE_API_KEY     = os.getenv("BRAVE_API_KEY",     "")
 
+# ── MongoDB (optional chat persistence) ────────────────────────────────────────
+MONGO_URI    = os.getenv("MONGO_URI", "").strip()
+MONGO_DB     = os.getenv("MONGO_DB", "assignment_ai").strip()
+CHAT_COLL    = os.getenv("MONGO_CHAT_COLL", "chat_sessions").strip()
+
 # ── Model names ───────────────────────────────────────────────────────────────
 MODEL_FAST     = "claude-haiku-4-5"    # Orchestrator, Critic, hooks
 MODEL_BALANCED = "claude-sonnet-4-6"   # Planner, Researcher, Writer
@@ -51,3 +56,7 @@ PIPELINE_SKILLS = {"research", "plan", "critique", "summarize"}
 # ── A2A config ────────────────────────────────────────────────────────────────
 A2A_HOST    = "0.0.0.0"
 A2A_BASE_URL = os.getenv("A2A_BASE_URL", "http://localhost:8000")
+
+# ── MCP / self-HTTP ────────────────────────────────────────────────────────────
+# Used by MCP tools that call back into this same FastAPI app (HTTP boundary demo).
+PLATFORM_SELF_URL = os.getenv("PLATFORM_SELF_URL", "http://127.0.0.1:9000").rstrip("/")
